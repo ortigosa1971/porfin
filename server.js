@@ -17,10 +17,7 @@ if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
 // ====== Sesiones (SQLite) ======
-const store = new SQLiteStore({
-  db: 'sessions.sqlite',
-  dir: DB_DIR
-});
+const store = new SQLiteStore({ db: 'sessions.sqlite', dir: DB_DIR });
 
 app.use(session({
   store,
@@ -96,7 +93,7 @@ app.post('/login', async (req, res) => {
 
     // 1) Si había una sesión previa, EXPULSARLA SIEMPRE (reemplazo automático)
     if (user.session_id) {
-      await storeDestroy(user.session_id).catch(() => {}); // ignora error si ya expiró
+      await storeDestroy(user.session_id).catch(() => {});
       db.prepare('UPDATE users SET session_id = NULL WHERE username = ?').run(user.username);
     }
 
@@ -111,13 +108,12 @@ app.post('/login', async (req, res) => {
     ).run(req.sessionID, user.username);
 
     if (claim.changes === 0) {
-      // Alguna carrera extrema: otro proceso tomó la sesión en microsegundos
       return res.redirect('/login.html?error=sesion_activa');
     }
 
     // 4) Completar sesión de app
     req.session.usuario = user.username;
-    log('login OK (reemplazo + claim) para', user.username, 'sid:', req.sessionID);
+    log('login OK (reemplazo + claim)', user.username, 'sid:', req.sessionID);
     return res.redirect('/inicio.html');
   } catch (e) {
     console.error(e);
@@ -196,7 +192,7 @@ const PORT = process.env.PORT || 8080;
 
 /* ========= RUTA EXISTENTE: total de lluvia acumulada (API externa configurable)
    Usa process.env.LLUVIA_API_URL y trata de deducir el total de varias formas
-   (lo dejo tal cual estaba en tu archivo).  ========= */
+   (se mantiene como tenías).  ========= */
 app.get('/api/lluvia/total', requiereSesionUnica, async (req, res) => {
   try {
     const apiUrl = process.env.LLUVIA_API_URL;
@@ -207,18 +203,12 @@ app.get('/api/lluvia/total', requiereSesionUnica, async (req, res) => {
     if (!r.ok) throw new Error('API externa HTTP ' + r.status);
     const datos = await r.json();
 
-    // Helper para castear a número seguro
-    const num = (v) => {
-      const n = Number(v);
-      return Number.isFinite(n) ? n : 0;
-    };
+    const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 
-    // 0) Si viene directamente un número (o string numérico)
     if (typeof datos === 'number' || (typeof datos === 'string' && !Number.isNaN(Number(datos)))) {
       return res.json({ total_mm: num(datos) });
     }
 
-    // 1) Si viene total directo
     if (datos && typeof datos === 'object') {
       for (const k of ['total_mm','total','acumulado','acumulado_mm','acumulado_dia_mm']) {
         if (k in datos && (typeof datos[k] === 'number' || typeof datos[k] === 'string')) {
@@ -227,39 +217,30 @@ app.get('/api/lluvia/total', requiereSesionUnica, async (req, res) => {
       }
     }
 
-    // 2) Si viene array (posible lista de lecturas / días)
     const arr = Array.isArray(datos) ? datos
               : (datos && (Array.isArray(datos.items) ? datos.items : (Array.isArray(datos.data) ? datos.data : null)));
 
     if (arr) {
-      // 2.a) Si los elementos ya traen 'acumulado*', usar el último por fecha o el mayor valor
       const pickAccum = (o) => o?.acumulado_mm ?? o?.acumulado ?? o?.acumulado_dia_mm ?? null;
       let hadAccum = false;
-      let byDate = [];
+      const byDate = [];
       for (const it of arr) {
         const acc = pickAccum(it);
         if (acc != null) {
           hadAccum = true;
-          byDate.push({
-            fecha: it?.fecha || it?.date || it?.timestamp || null,
-            val: num(acc)
-          });
+          byDate.push({ fecha: it?.fecha || it?.date || it?.timestamp || null, val: num(acc) });
         }
       }
       if (hadAccum) {
-        // Preferir último por fecha si existe alguna
         const withFecha = byDate.filter(x => x.fecha);
         if (withFecha.length) {
-          // Ordenar por fecha asc y coger el último
           withFecha.sort((a,b) => (new Date(a.fecha)) - (new Date(b.fecha)));
           return res.json({ total_mm: num(withFecha[withFecha.length-1].val) });
         }
-        // En su defecto, el mayor valor (acumulado final)
         const maxVal = byDate.reduce((m,x) => Math.max(m, x.val), 0);
         return res.json({ total_mm: num(maxVal) });
       }
 
-      // 2.b) Si NO traen 'acumulado*', sumar por campos típicos
       const total = arr.reduce((acc, d) => {
         const v = d?.mm ?? d?.lluvia ?? d?.precip_mm ?? d?.rain ?? 0;
         return acc + num(v);
@@ -275,46 +256,92 @@ app.get('/api/lluvia/total', requiereSesionUnica, async (req, res) => {
 });
 // === Fin ruta existente ===
 
-/* ========= RUTA NUEVA: lluvia acumulada del AÑO ACTUAL (WU) =========
-   Suma metric.precipTotal de /v2/pws/history/daily entre 1/enero y hoy.
-   Requiere WU_API_KEY y WU_STATION_ID en .env
+/* ========= RUTA NUEVA (PÚBLICA): lluvia acumulada del AÑO ACTUAL (WU) =========
+   1) Intenta /v2/pws/history/daily (rango completo)
+   2) Si WU devuelve 400/404/!=200, Fallback a /v2/pws/history/all por día,
+      sumando la máxima metric.precipTotal de cada fecha.
+   Requiere WU_API_KEY y WU_STATION_ID en .env/.Railway
 */
 app.get('/api/lluvia/total/year', async (req, res) => {
-
   try {
     const apiKey = process.env.WU_API_KEY;
     const stationId = process.env.WU_STATION_ID;
     if (!apiKey || !stationId) {
-      return res.status(400).json({
-        error: 'config_missing',
-        detalle: 'Define WU_API_KEY y WU_STATION_ID en el .env'
-      });
+      return res.status(400).json({ error: 'config_missing', detalle: 'Define WU_API_KEY y WU_STATION_ID' });
     }
 
-    const ahora = new Date();
-    const year = ahora.getFullYear();
-    const pad = (n) => String(n).padStart(2, '0');
-    const startDate = `${year}0101`; // inclusive
-    const endDate = `${year}${pad(ahora.getMonth() + 1)}${pad(ahora.getDate())}`; // inclusive
+    const hoy = new Date();
+    const year = hoy.getFullYear();
+    const pad = n => String(n).padStart(2,'0');
+    const ymd = d => `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}`;
+    const desdeISO = `${year}-01-01`;
+    const hastaISO = `${year}-${pad(hoy.getMonth()+1)}-${pad(hoy.getDate())}`;
 
-    const url = `https://api.weather.com/v2/pws/history/daily?stationId=${encodeURIComponent(stationId)}&format=json&units=m&startDate=${startDate}&endDate=${endDate}&apiKey=${encodeURIComponent(apiKey)}`;
+    // 1) Intento rápido: history/daily
+    const urlDaily = `https://api.weather.com/v2/pws/history/daily?stationId=${encodeURIComponent(stationId)}&format=json&units=m&startDate=${year}0101&endDate=${ymd(hoy)}&apiKey=${encodeURIComponent(apiKey)}`;
 
-    const r = await fetch(url);
-    if (!r.ok) throw new Error(`WU HTTP ${r.status}`);
-    const data = await r.json();
+    let totalMM = 0;
+    let ok = false;
 
-    const arr = Array.isArray(data?.observations) ? data.observations : [];
-    const totalYear = arr.reduce((acc, d) => {
-      const mm = Number(d?.metric?.precipTotal ?? 0);
-      return acc + (Number.isFinite(mm) ? mm : 0);
-    }, 0);
+    try {
+      const r = await fetch(urlDaily);
+      if (r.ok) {
+        const data = await r.json();
+        const arr = Array.isArray(data?.observations) ? data.observations : [];
+        totalMM = arr.reduce((acc, d) => {
+          const v = Number(d?.metric?.precipTotal ?? 0);
+          return acc + (Number.isFinite(v) ? v : 0);
+        }, 0);
+        ok = true;
+      } else {
+        console.warn('[WU daily] status:', r.status);
+      }
+    } catch (e) {
+      console.warn('[WU daily] error:', e?.message || e);
+    }
+
+    // 2) Fallback: history/all por día
+    if (!ok) {
+      const urlAll = (yyyymmdd) =>
+        `https://api.weather.com/v2/pws/history/all?stationId=${encodeURIComponent(stationId)}&format=json&units=m&date=${yyyymmdd}&apiKey=${encodeURIComponent(apiKey)}`;
+      const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+
+      let cursor = new Date(`${year}-01-01T00:00:00Z`);
+      const fin = new Date(`${hastaISO}T00:00:00Z`);
+      let suma = 0;
+
+      while (cursor <= fin) {
+        const dStr = ymd(cursor);
+        try {
+          const r = await fetch(urlAll(dStr));
+          if (!r.ok) {
+            console.warn('[WU all] status', dStr, r.status);
+          } else {
+            const data = await r.json();
+            const obs = Array.isArray(data?.observations) ? data.observations : [];
+            let maxTotal = 0;
+            for (const o of obs) {
+              const pt = Number(o?.metric?.precipTotal ?? 0);
+              if (Number.isFinite(pt) && pt > maxTotal) maxTotal = pt;
+            }
+            suma += maxTotal;
+          }
+        } catch (e) {
+          console.warn('[WU all] error', dStr, e?.message || e);
+        }
+        // Si te preocupa rate limit, puedes pausar aquí:
+        // await new Promise(r => setTimeout(r, 100));
+        cursor = addDays(cursor, 1);
+      }
+      totalMM = Number(suma.toFixed(2));
+    }
 
     return res.json({
-      total_mm: Number(totalYear.toFixed(2)),
+      total_mm: Number(totalMM.toFixed(2)),
       year,
-      desde: `${year}-01-01`,
-      hasta: `${year}-${pad(ahora.getMonth() + 1)}-${pad(ahora.getDate())}`,
-      origen: 'WU history/daily'
+      desde: desdeISO,
+      hasta: hastaISO,
+      origen: ok ? 'WU history/daily' : 'WU history/all (fallback)'
     });
   } catch (e) {
     console.error('Error /api/lluvia/total/year:', e);
@@ -324,3 +351,4 @@ app.get('/api/lluvia/total/year', async (req, res) => {
 // === Fin ruta nueva ===
 
 app.listen(PORT, () => console.log(`🚀 http://0.0.0.0:${PORT} — reemplazo automático de sesión activado`));
+
