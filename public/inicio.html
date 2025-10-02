@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Estación Meteorológica</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  
+<style>
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      position: relative;
+      transition: background-color 1s;
+      background: linear-gradient(135deg, #202c3b, #2d3e50);
+      font-family: 'Orbitron', sans-serif;
+    }
+    .top-right-button {
+      background: #00bfff;
+      color: #000;
+      padding: 10px 15px;
+      border-radius: 5px;
+      font-weight: bold;
+      cursor: pointer;
+      box-shadow: 0 0 5px rgba(0, 191, 255, 0.5);
+    }
+    .weather-screen {
+      background: #000;
+      color: #00bfff;
+      padding: 20px;
+      border-radius: 10px;
+      width: 90%;
+      max-width: 500px;
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    .data-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 15px;
+      margin-top: 10px;
+    }
+    .data-box {
+      background: rgba(255, 255, 255, 0.1);
+      padding: 16px;
+      border-radius: 8px;
+      text-align: center;
+      min-height: 90px;
+      box-shadow: 0 0 6px rgba(0, 191, 255, 0.5);
+    }
+    .label {
+      font-size: 1rem;
+      font-weight: bold;
+    }
+    .value {
+      font-size: 1.6rem;
+      font-weight: bold;
+      margin-top: 5px;
+    }
+    #spinner-mes {
+      display: none;
+      margin: 10px auto;
+      border: 4px solid #f3f3f3;
+      border-top: 4px solid #00bfff;
+      border-radius: 50%;
+      width: 28px;
+      height: 28px;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+</style>
+</head>
+<body class="px-2 sm:px-4">
+  <h1 class="text-4xl font-bold text-white mb-4">ALFARNATE</h1>
+
+  <div class="weather-screen">
+    <h1 class="text-2xl font-bold">📡 Estación Meteorológica en tiempo real cada minuto</h1>
+    <div class="data-grid">
+
+      <!-- Tarjeta: Lluvia acumulada (AÑO ACTUAL) -->
+      <div class="bg-slate-800/60 backdrop-blur rounded-2xl p-4 shadow-lg border border-slate-700 w-full max-w-xs">
+        <div class="text-slate-300 text-sm">Lluvia acumulada</div>
+        <div id="total-lluvia" class="text-4xl font-extrabold text-cyan-300 mt-1">--</div>
+        <div id="total-lluvia-rango" class="text-slate-400 text-xs mt-1">(año actual)</div>
+      </div>
+
+      <div class="data-box"><p class="label">🌡️ Temperatura</p><p class="value" id="temperature">--</p></div>
+      <div class="data-box"><p class="label">💧 Humedad</p><p class="value" id="humidity">--</p></div>
+      <div class="data-box"><p class="label">💨 Viento</p><p class="value" id="wind-speed">--</p></div>
+      <div class="data-box"><p class="label">🧭 Dirección</p><p class="value" id="wind-dir">--</p></div>
+      <div class="data-box"><p class="label">🌧️ Lluvia</p><p class="value" id="rainfall">--</p></div>
+      <div class="data-box"><p class="label">🌍 Presión</p><p class="value" id="pressure">--</p></div>
+      <div class="data-box"><p class="label">☀️ Índice UV</p><p class="value" id="uv-index">--</p></div>
+      <div class="data-box"><p class="label">🕒 Hora</p><p class="value" id="time">--</p></div>
+    </div>
+    <p id="error-message" class="text-red-500 text-sm mt-2 hidden"></p>
+  </div>
+
+  <div class="weather-screen">
+    <h2 class="text-xl font-bold mb-4">🔮 Pronóstico de 7 días</h2>
+    <div id="forecast" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 text-left text-sm sm:text-base"></div>
+  </div>
+
+  <!-- Selector y gráfico mensual (se mantiene como lo tenías) -->
+  <div class="weather-screen">
+    <h2 class="text-xl font-bold mb-2">📅 Lluvia mensual (WU)</h2>
+    <input id="mes-selector" type="month" class="text-black p-1 rounded mb-2"/>
+    <button id="boton-mes" class="top-right-button">Calcular</button>
+    <div id="spinner-mes"></div>
+    <p id="resultado-mes" class="mt-2"></p>
+    <canvas id="grafico-lluvia" width="400" height="200"></canvas>
+  </div>
+
+  <!-- Botón historial (igual que tu original) -->
+  <div class="weather-screen">
+    <button onclick="location.href='https://viejo-production-3e8d.up.railway.app/'" class="top-right-button mt-4 w-full sm:w-auto">📊 Ver Historial</button>
+  </div>
+
+  <!-- Overlay por sesión cerrada -->
+  <div id="overlay-sesion" class="hidden fixed inset-0 bg-white flex items-center justify-center z-50">
+    <p class="text-red-600 text-4xl font-extrabold text-center px-6">
+      ⚠️ Tu sesión ha sido cerrada<br>porque iniciaste sesión en otro dispositivo.
+    </p>
+  </div>
+
+  <script>
+    async function fetchWeatherData() {
+      const apiKey = 'bbaca6cd82b24eaeaca6cd82b20eae92';
+      const stationId = 'IALFAR32';
+      const url = `https://api.weather.com/v2/pws/observations/current?stationId=${stationId}&format=json&units=m&apiKey=${apiKey}`;
+      try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+        // Parseo seguro en vez de response.json()
+        const text = await response.text();
+        if (!text) throw new Error('Respuesta vacía de la API');
+        const ct = (response.headers.get('content-type') || '').toLowerCase();
+        if (!ct.includes('application/json')) throw new Error('Respuesta no es JSON');
+        const data = JSON.parse(text);
+
+        const obs = data.observations?.[0];
+        if (!obs) throw new Error("Datos no disponibles.");
+        const metric = obs.metric || {};
+        document.getElementById('temperature').textContent = `${metric.temp} °C`;
+        document.getElementById('humidity').textContent = `${obs.humidity} %`;
+        document.getElementById('wind-speed').textContent = `${metric.windSpeed} km/h`;
+        const dir = obs.winddir;
+        const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SO', 'O', 'NO'];
+        const idx = Math.round(dir / 45) % 8;
+        document.getElementById('wind-dir').textContent = `${dir}° (${dirs[idx]})`;
+        document.getElementById('rainfall').textContent = `${metric.precipTotal} mm`;
+        document.getElementById('pressure').textContent = `${metric.pressure} hPa`;
+        document.getElementById('uv-index').textContent = obs.uv;
+        document.getElementById('time').textContent = new Date(obs.obsTimeLocal).toLocaleString();
+        document.getElementById('error-message').classList.add('hidden');
+      } catch (err) {
+        console.error('⚠️ Error al obtener la meteo:', err);
+        const em = document.getElementById('error-message');
+        if (em) { em.textContent = 'No se pudo obtener la información meteorológica.'; em.classList.remove('hidden'); }
+      }
+    }
+
+    async function fetchForecast() {
+      const lat = 36.985;
+      const lon = -4.223;
+      const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&daily=temperature_2m_min,temperature_2m_max,weathercode,precipitation_probability_max&timezone=auto&forecast_days=7`;
+      try {
+        const res = await fetch(url);
+        const data = await res.json();
+        const forecastDiv = document.getElementById("forecast");
+        const dias = data.daily.time;
+        const min = data.daily.temperature_2m_min;
+        const max = data.daily.temperature_2m_max;
+        const code = data.daily.weathercode;
+        const lluvia = data.daily.precipitation_probability_max;
+        const desc = {
+          0: 'Despejado ☀️', 1: 'Mayormente despejado 🌤️', 2: 'Parcialmente nublado ⛅',
+          3: 'Nublado ☁️', 45: 'Niebla 🌫️', 48: 'Niebla escarchada 🌫️❄️',
+          51: 'Llovizna ligera 🌦️', 53: 'Llovizna moderada 🌧️', 55: 'Llovizna densa 🌧️',
+          61: 'Lluvia ligera 🌦️', 63: 'Lluvia moderada 🌧️', 65: 'Lluvia intensa 🌧️',
+          71: 'Nieve ligera 🌨️', 73: 'Nieve moderada 🌨️', 75: 'Nieve intensa ❄️',
+          80: 'Chubascos ligeros 🌦️', 81: 'Chubascos moderados 🌧️', 82: 'Chubascos fuertes ⛈️'
+        };
+        forecastDiv.innerHTML = '';
+        for (let i = 0; i < dias.length; i++) {
+          const dia = new Date(dias[i]).toLocaleDateString('es-ES', { weekday: 'long' });
+          forecastDiv.innerHTML += `<div><strong>${dia}</strong><br>${desc[code[i]] || 'Clima'}<br>🌡️ ${min[i]}°C - ${max[i]}°C<br>🌧️ ${lluvia[i]}%</div>`;
+        }
+      } catch (e) {
+        document.getElementById("forecast").textContent = "Error al cargar el pronóstico";
+        console.error("Error al obtener pronóstico:", e);
+      }
+    }
+
+    function mostrarLluviaAcumuladaPorMes() {
+      const apiKey = 'bbaca6cd82b24eaeaca6cd82b20eae92';
+      const stationId = 'IALFAR32';
+      const mesInput = document.getElementById('mes-selector').value;
+      const resultado = document.getElementById('resultado-mes');
+      const spinner = document.getElementById('spinner-mes');
+      const canvas = document.getElementById('grafico-lluvia');
+      const ctx = canvas.getContext('2d');
+      if (!mesInput) {
+        resultado.textContent = "⚠️ Selecciona un mes válido.";
+        return;
+      }
+      const [year, month] = mesInput.split("-");
+      const startDate = `${year}${month}01`;
+      const endDateObj = new Date(year, parseInt(month), 0);
+      const endDay = String(endDateObj.getDate()).padStart(2, '0');
+      const endDate = `${year}${month}${endDay}`;
+      const url = `https://api.weather.com/v2/pws/history/daily?stationId=${stationId}&format=json&units=m&startDate=${startDate}&endDate=${endDate}&apiKey=${apiKey}`;
+      spinner.style.display = "block";
+      resultado.textContent = "🔄 Consultando.";
+      fetch(url)
+        .then(res => {
+          if (!res.ok) throw new Error(`HTTP Error: ${res.status}`);
+          return res.json();
+        })
+        .then(data => {
+          const dias = data.observations.map(day => {
+            const fecha = new Date(day.obsTimeLocal);
+            return fecha.getDate();
+          });
+          const lluviaDiaria = data.observations.map(day => day.metric?.precipTotal || 0);
+          const total = lluviaDiaria.reduce((a, b) => a + b, 0);
+          resultado.textContent = `🌧️ Lluvia total en ${month}/${year}: ${total.toFixed(2)} mm`;
+          if (window.miGrafico) window.miGrafico.destroy();
+          window.miGrafico = new Chart(ctx, {
+            type: 'bar',
+            data: {
+              labels: dias,
+              datasets: [{
+                label: 'Lluvia diaria (mm)',
+                data: lluviaDiaria,
+              }]
+            },
+            options: {
+              responsive: true,
+              plugins: {
+                legend: { display: false },
+                title: { display: true, text: `Lluvia diaria - ${month}/${year}` }
+              },
+              scales: {
+                y: { beginAtZero: true }
+              }
+            }
+          });
+        })
+        .catch(err => {
+          resultado.textContent = "❌ No se pudieron obtener los datos.";
+          console.error("⚠️ Error al obtener los datos del mes:", err);
+        })
+        .finally(() => {
+          spinner.style.display = "none";
+        });
+    }
+
+    document.addEventListener("DOMContentLoaded", () => {
+      fetchWeatherData();
+      fetchForecast();
+      setInterval(fetchWeatherData, 60000);
+      const botonMes = document.getElementById("boton-mes");
+      if (botonMes) {
+        botonMes.addEventListener("click", mostrarLluviaAcumuladaPorMes);
+      }
+    });
+
+    // Verificación de sesión activa
+    setInterval(async () => {
+      try {
+        const res = await fetch('/verificar-sesion', { cache: 'no-store' });
+        if (res.status === 401) {
+          window.location.href = '/login.html?error=sesion';
+          return;
+        }
+        const ct = (res.headers.get('content-type') || '').toLowerCase();
+        const text = await res.text();
+        if (!text) return;
+        if (!ct.includes('application/json')) return;
+        const data = JSON.parse(text);
+        if (data && data.activo === false) {
+          window.location.href = '/login.html?error=sesion';
+        }
+      } catch (e) {
+        console.debug('verificar-sesion fallo:', e);
+      }
+    }, 1500);
+  </script>
+
+  <script>
+  // === NUEVO: cargar total lluvia del año actual desde /api/lluvia/total/year
+  (async function cargarTotalLluviaAnual(){
+    const el = document.getElementById('total-lluvia');
+    const rangoEl = document.getElementById('total-lluvia-rango');
+    if (!el) return;
+    try {
+      const r = await fetch('/api/lluvia/total/year', { credentials: 'same-origin', cache: 'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      const mm = Number(data?.total_mm ?? 0);
+      el.textContent = (Number.isFinite(mm) ? mm : 0).toFixed(1) + ' mm';
+
+      if (data?.desde && data?.hasta) {
+        rangoEl.textContent = `(${data.year}: ${data.desde} → ${data.hasta})`;
+      } else {
+        rangoEl.textContent = '(año actual)';
+      }
+    } catch (e) {
+      console.error(e);
+      el.textContent = '—';
+      el.title = 'No se pudo cargar la lluvia anual';
+    }
+  })();
+  </script>
+
+</body>
+</html>
