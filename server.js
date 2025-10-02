@@ -279,7 +279,8 @@ app.get('/api/lluvia/total', requiereSesionUnica, async (req, res) => {
    Suma metric.precipTotal de /v2/pws/history/daily entre 1/enero y hoy.
    Requiere WU_API_KEY y WU_STATION_ID en .env
 */
-app.get('/api/lluvia/total/year', requiereSesionUnica, async (req, res) => {
+app.get('/api/lluvia/total/year', async (req, res) => {
+
   try {
     const apiKey = process.env.WU_API_KEY;
     const stationId = process.env.WU_STATION_ID;
